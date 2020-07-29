@@ -9,7 +9,7 @@ use iced::{
 };
 
 mod league;
-use league::{Lockfile};
+use league::{Lockfile, LolPerksPerkPage};
 
 mod error;
 use error::{Error, StringError};
@@ -76,7 +76,7 @@ impl LeagueStatus {
 
 enum Screen {
     LocateLeagueDir{btn_states: LocateLeagueDirBtnStates},
-    RunepageDisplay{runepage_info: String},
+    RunepageDisplay{runepage_info: Option<Vec<LolPerksPerkPage>>},
     Normal,
 }
 
@@ -149,7 +149,7 @@ impl Application for Runomicon {
             },
             Message::GoToRunes => {
                 if let Some (lf) = &self.league_status.lockfile {
-                    self.screen = Screen::RunepageDisplay { runepage_info: String::from("Loading...")};
+                    self.screen = Screen::RunepageDisplay { runepage_info: None};
                     Command::perform(Runomicon::get_runepages(lf.clone()), Message::GetRunepagesDone)
                 } else {
                     Command::none()
@@ -158,7 +158,8 @@ impl Application for Runomicon {
             Message::GetRunepagesDone (result) => {
                 match result {
                     Ok(s) => {
-                        self.screen = Screen::RunepageDisplay {runepage_info: s};
+                        let deserialized_pages = serde_json::from_str(&s).unwrap();
+                        self.screen = Screen::RunepageDisplay {runepage_info: deserialized_pages};
                     }
                     Err(e) => {
                         println!("{:?}", e);
@@ -191,10 +192,21 @@ impl Application for Runomicon {
                     .push( button(&mut btn_states.go_to_runes_btn, "View runes").on_press(Message::GoToRunes))
             }
             Screen::RunepageDisplay{runepage_info} => {
-                Column::new()
+                
+                let mut content_column =
+                    Column::new()
                     .width(Length::Shrink)
-                    .push(Text::new("Runepages:"))
-                    .push(Text::new(runepage_info.clone()))
+                    .push(Text::new("Runepages:"));
+
+                if let Some(pages) = runepage_info {
+                    for page in pages {
+                        content_column = content_column.push(Text::new(format!("ID: {} Name: {}", page.id, page.name)));
+                    }
+                } else {
+                    content_column = content_column.push(Text::new(format!("Loading...")));
+                }
+
+                content_column
             }
             Screen::Normal => {
                 Column::new()
@@ -256,7 +268,6 @@ impl Runomicon {
             .text()
             .await?;
 
-        println!("{:?}", text);
         Ok(text)
     }
 }
