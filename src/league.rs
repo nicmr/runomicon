@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 use serde::{Deserialize};
 
 #[derive(Debug, Clone)]
@@ -34,4 +36,14 @@ pub struct LolPerksPerkPage {
     pub primaryStyleId: i64,
     pub selectedPerkIds: Vec<i64>,
     pub subStyleId: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LolPerksPerkUIPerk {
+    pub iconPath: String,
+    pub id: i64,
+    pub longDesc: String,
+    pub name: String,
+    pub shortDesc: String,
+    pub tooltip: String,
 }

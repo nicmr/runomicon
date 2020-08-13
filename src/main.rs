@@ -5,11 +5,13 @@ use std::path::Path;
 
 use iced::{
     button, Application, Button, Column, Command,
-    Container, Element, Length,Settings, Text, window,
+    Container, Element, Length, Row, Settings, Text, window,
 };
 
 mod league;
-use league::{Lockfile, LolPerksPerkPage};
+use league::{Lockfile, LolPerksPerkPage, LolPerksPerkUIPerk};
+use std::collections::{HashMap};
+
 
 mod error;
 use error::{Error, StringError};
@@ -28,6 +30,8 @@ fn main() {
 struct Runomicon {
     screen: Screen,
     league_status: LeagueStatus,
+    runes_by_id: Option<HashMap<i64, LolPerksPerkUIPerk>>,
+    runepages: Option<Vec<LolPerksPerkPage>>,
 }
 
 struct LeagueStatus {
@@ -76,7 +80,8 @@ impl LeagueStatus {
 
 enum Screen {
     LocateLeagueDir{btn_states: LocateLeagueDirBtnStates},
-    RunepageDisplay{runepage_info: Option<Vec<LolPerksPerkPage>>},
+    RunepageDisplay{overviews: Vec<RunepageOverview>},
+    RunepageModify{id: usize},
     Normal,
 }
 
@@ -99,8 +104,10 @@ enum Message {
     DirLocated,
     PickFolder,
     PickFolderDone(Result<PathBuf, Error>),
+    GetRunesDone(Result<String, Error>),
     GetRunepagesDone(Result<String, Error>),
     GoToRunes,
+    RunepageOverviewMessage(usize, RunepageOverviewMessage)
 }
 
 impl Application for Runomicon {
@@ -112,6 +119,8 @@ impl Application for Runomicon {
         (Runomicon {
             screen: Screen::LocateLeagueDir{btn_states: LocateLeagueDirBtnStates::new()},
             league_status: LeagueStatus::new(),
+            runes_by_id: None,
+            runepages: None,
         }
         , Command::none())
     }
@@ -149,24 +158,55 @@ impl Application for Runomicon {
             },
             Message::GoToRunes => {
                 if let Some (lf) = &self.league_status.lockfile {
-                    self.screen = Screen::RunepageDisplay { runepage_info: None};
-                    Command::perform(Runomicon::get_runepages(lf.clone()), Message::GetRunepagesDone)
+                    self.screen = Screen::RunepageDisplay {overviews: Vec::new()};
+                    Command::perform(Runomicon::get_runes(lf.clone()), Message::GetRunesDone)
                 } else {
                     Command::none()
                 }
             },
+            Message::GetRunesDone (result) => {
+                match result {
+                    Ok(s) => {
+                        let runes: Vec<LolPerksPerkUIPerk> = serde_json::from_str(&s).unwrap();
+                        let rune_map = runes
+                            .iter()
+                            .fold(HashMap::new(), |mut map, perk| {
+                            map.insert(perk.id, perk.clone());
+                            map
+                        });
+
+                        self.runes_by_id = Some(rune_map);
+                    }
+                    Err(e) => {
+                        println!("{:?}", e);
+                    }
+                }
+                if let Some (lf) = &self.league_status.lockfile {
+                    Command::perform(Runomicon::get_runepages(lf.clone()), Message::GetRunepagesDone)
+                } else {
+                    Command::none()
+                }
+            }
             Message::GetRunepagesDone (result) => {
                 match result {
                     Ok(s) => {
-                        let deserialized_pages = serde_json::from_str(&s).unwrap();
-                        self.screen = Screen::RunepageDisplay {runepage_info: deserialized_pages};
+                        // Careful, properly handle unwrap
+                        let deserialized_pages: Vec<LolPerksPerkPage> = serde_json::from_str(&s).unwrap();
+                        self.runepages = Some(deserialized_pages);
+                        self.screen = Screen::RunepageDisplay {
+                            overviews: self.runepages.clone().iter().flatten().map(|page| RunepageOverview::from(page)).collect()
+                        };
                     }
                     Err(e) => {
                         println!("{:?}", e);
                     }
                 }
                 Command::none()
-            }
+            },
+            Message::RunepageOverviewMessage (index, msg ) => {
+                self.screen = Screen::RunepageModify { id: index } ;
+                Command::none()
+            },
         }
     }
 
@@ -191,22 +231,43 @@ impl Application for Runomicon {
                     .push(Text::new(format!("Lockfile: {:?}", self.league_status.lockfile)))
                     .push( button(&mut btn_states.go_to_runes_btn, "View runes").on_press(Message::GoToRunes))
             }
-            Screen::RunepageDisplay{runepage_info} => {
-                
+            Screen::RunepageDisplay{overviews} => {
                 let mut content_column =
                     Column::new()
                     .width(Length::Shrink)
                     .push(Text::new("Runepages:"));
 
-                if let Some(pages) = runepage_info {
-                    for page in pages {
-                        content_column = content_column.push(Text::new(format!("ID: {} Name: {}", page.id, page.name)));
-                    }
+                if overviews.len() > 0 {
+                    content_column = overviews
+                        .iter_mut()
+                        .enumerate()
+                        .fold(content_column, |column, (ind, overview)| {
+                            column.push(overview.view().map(move |message| { Message::RunepageOverviewMessage(ind, message)}))
+                        });
                 } else {
-                    content_column = content_column.push(Text::new(format!("Loading...")));
+                    content_column = content_column.push(Text::new("Nothing here..."));
                 }
-
                 content_column
+            }
+            Screen::RunepageModify {id} => {
+                let rune_ids : String = if let (Some(pages), Some(runes_by_id)) = (&self.runepages, &self.runes_by_id) {
+                    let runepage = pages[id.clone()].clone();
+                    runepage.selectedPerkIds.iter().fold(String::new(), |mut acc, perkid| {
+                        let name = match runes_by_id.get(perkid) {
+                            Some(rune) => rune.name.clone(),
+                            None => String::from("Rune not found"),
+                        };
+                        acc.push_str(&format!("{} {:?}", perkid, name));
+                        acc
+                    })
+                } else {
+                    String::from("Cant get rune_ids")
+                };
+                
+                Column::new()
+                    .width(Length::Shrink)
+                    .push(Text::new(format!("Modifying runepage {}", id)))
+                    .push(Text::new(rune_ids))
             }
             Screen::Normal => {
                 Column::new()
@@ -224,8 +285,8 @@ impl Application for Runomicon {
     }
 }
 
-fn button<'a>(screen: &'a mut button::State, text: &str) -> Button<'a, Message> {
-    Button::new(screen, Text::new(text))
+fn button<'a>(state: &'a mut button::State, text: &str) -> Button<'a, Message> {
+    Button::new(state, Text::new(text))
         .padding(10)
 }
 
@@ -269,5 +330,87 @@ impl Runomicon {
             .await?;
 
         Ok(text)
+    }
+    async fn get_runes(lockfile: Lockfile) -> Result<String, Error> {
+
+        // create the authorization header contents
+        let authorization : String = {
+            let user_and_password = ["riot", &lockfile.password].join(":");
+            let as_b64 = base64::encode(user_and_password);
+            ["Basic", &as_b64].join(" ")
+        };
+
+        // send the request to the league api
+        let resp = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap()
+            .get(&(["https://127.0.0.1:", &lockfile.port.to_string(), "/lol-perks/v1/perks"].join("")))
+            .header("Authorization",  authorization)
+            .send()
+            .await?;
+
+        let text =
+            resp
+            .text()
+            .await?;
+
+        Ok(text)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RunepageOverview {
+    name: String,
+    state : RunepageOverviewState
+}
+
+#[derive(Debug, Clone)]
+enum RunepageOverviewState {
+    Idle {
+        modify_button: button::State,
+    }
+}
+
+#[derive(Debug, Clone)]
+enum RunepageOverviewMessage {
+    Modify,
+}
+
+impl RunepageOverview {
+    fn new(name: String) -> Self {
+        RunepageOverview {
+            name,
+            state: RunepageOverviewState::Idle {
+                modify_button: button::State::new(),
+            },
+        }
+    }
+
+    fn update(&mut self, message: RunepageOverviewMessage) {
+        match message {
+            RunepageOverviewMessage::Modify => {},
+        }
+    }
+
+    fn view(&mut self) -> Element<RunepageOverviewMessage> {
+        match &mut self.state {
+            RunepageOverviewState::Idle {modify_button} => {
+                Row::new()
+                    .push(Text::new(self.name.clone()))
+                    .push(Button::new(modify_button, Text::new("Modify")).on_press(RunepageOverviewMessage::Modify))
+                    .into()
+                    
+            }
+        }
+    }
+}
+
+impl From<&LolPerksPerkPage> for RunepageOverview {
+    fn from(perkpage : &LolPerksPerkPage) -> Self {
+        Self {
+            name: perkpage.name.clone(),
+            state: RunepageOverviewState::Idle {modify_button: button::State::new()}
+        }
     }
 }
